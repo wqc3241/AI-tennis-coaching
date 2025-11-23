@@ -1,0 +1,7 @@
+{
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "description": "AI Sports Coach - Video Analysis & Local Recommendations",
+  "name": "App"
+}
