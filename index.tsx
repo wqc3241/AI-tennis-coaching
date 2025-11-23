@@ -52,52 +52,19 @@ const MOCK_COACHES = [
   }
 ];
 
-// --- Helper: Frame Extraction ---
+// --- Helper: Video Processing ---
 
-const extractFrames = async (videoFile: File): Promise<string[]> => {
+const fileToBase64 = (file: File): Promise<string> => {
   return new Promise((resolve, reject) => {
-    const video = document.createElement('video');
-    const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d');
-    const frames: string[] = [];
-    const src = URL.createObjectURL(videoFile);
-    
-    video.src = src;
-    video.muted = true;
-    video.playsInline = true;
-
-    video.onloadedmetadata = async () => {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      const duration = video.duration;
-      // Capture 4 evenly spaced frames
-      const timePoints = [duration * 0.2, duration * 0.4, duration * 0.6, duration * 0.8];
-
-      try {
-        for (const time of timePoints) {
-          video.currentTime = time;
-          await new Promise<void>((r) => {
-            const seekHandler = () => {
-              video.removeEventListener('seeked', seekHandler);
-              r();
-            };
-            video.addEventListener('seeked', seekHandler);
-          });
-          
-          if (context) {
-            context.drawImage(video, 0, 0, canvas.width, canvas.height);
-            const base64 = canvas.toDataURL('image/jpeg', 0.6).split(',')[1];
-            frames.push(base64);
-          }
-        }
-        URL.revokeObjectURL(src);
-        resolve(frames);
-      } catch (e) {
-        reject(e);
-      }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      // Remove data:video/mp4;base64, prefix to get raw base64
+      const base64 = result.split(',')[1];
+      resolve(base64);
     };
-
-    video.onerror = (e) => reject(e);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
   });
 };
 
@@ -132,14 +99,35 @@ const Card = ({ children, className = "" }: { children?: React.ReactNode, classN
 
 const VideoPlayerCard: React.FC<{ video: any }> = ({ video }) => {
   const [isPlaying, setIsPlaying] = useState(false);
-  
-  // Fix generic titles
-  let displayTitle = video.web.title;
-  if (displayTitle.toLowerCase().trim() === 'youtube.com' || displayTitle.trim() === '') {
-    displayTitle = "Instructional Drill Video";
-  }
-
+  const [displayTitle, setDisplayTitle] = useState(video.web.title || "");
   const videoId = getYouTubeVideoId(video.web.uri);
+
+  useEffect(() => {
+    const fetchTitle = async () => {
+      // If the title is generic (e.g. 'youtube.com') or empty, try to fetch the real title
+      const isGeneric = !displayTitle || displayTitle.toLowerCase().trim() === 'youtube.com' || displayTitle.trim() === '';
+      
+      if (videoId && isGeneric) {
+        try {
+          // Use noembed as a public oEmbed proxy to get metadata without CORS issues
+          const response = await fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`);
+          const data = await response.json();
+          if (data.title) {
+            setDisplayTitle(data.title);
+          } else {
+             setDisplayTitle("Instructional Drill Video"); 
+          }
+        } catch (error) {
+          // If fetch fails, fallback to a better generic title than 'youtube.com'
+          setDisplayTitle("Instructional Drill Video");
+        }
+      } else if (isGeneric) {
+         setDisplayTitle("Instructional Drill Video");
+      }
+    };
+    
+    fetchTitle();
+  }, [videoId, video.web.title]); 
 
   if (isPlaying && videoId) {
     return (
@@ -232,6 +220,12 @@ const App = () => {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
+      
+      // Simple warning for very large files
+      if (file.size > 20 * 1024 * 1024) {
+         alert("For best performance, please use a video under 20MB.");
+      }
+      
       setVideoFile(file);
       setVideoUrl(URL.createObjectURL(file));
       setResult(null);
@@ -246,25 +240,20 @@ const App = () => {
     setResult(null);
 
     try {
-      const frames = await extractFrames(videoFile);
+      const base64Video = await fileToBase64(videoFile);
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       
-      const parts: any[] = frames.map(data => ({
-        inlineData: { mimeType: 'image/jpeg', data }
-      }));
-
-      // We construct a prompt that explicitly demands tool usage to ensure the other tabs get data.
-      // We also use a separator to split the text content easily.
-      const prompt = `
+      // --- Request 1: Main Video Analysis & General Search (Gemini 3 Pro) ---
+      // Gemini 3 Pro is superior for video understanding and general reasoning.
+      const analysisPrompt = `
         You are an expert ${currentSport} coach.
         
         PART 1: GATHER RESOURCES (Important: You MUST use the available tools first)
         1. Search for "youtube ${currentSport} drills for [major flaw seen in video]" using Google Search.
         2. Search for "top rated ${currentSport} coaches near me" using Google Search.
-        3. Search for "${currentSport} courts, parks, and athletic clubs near me. Do NOT include retail stores, shops, or equipment stores." using Google Maps.
         
         PART 2: ANALYZE
-        Analyze the user's form from the provided video frames.
+        Analyze the user's form from the provided video.
         
         OUTPUT FORMAT (Strictly follow this structure):
         
@@ -274,38 +263,50 @@ const App = () => {
         ## DRILLS
         [List 3 specific drills to fix the issues. Be instructive.]
       `;
-      parts.push({ text: prompt });
 
-      const tools: any[] = [{ googleSearch: {} }];
-      let toolConfig = undefined;
-      
-      if (location) {
-        tools.push({ googleMaps: {} });
-        toolConfig = { retrievalConfig: { latLng: { latitude: location.lat, longitude: location.lng } } };
-      }
-
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: { parts },
+      const analysisPromise = ai.models.generateContent({
+        model: 'gemini-3-pro-preview', 
+        contents: {
+            parts: [
+                { inlineData: { mimeType: videoFile.type, data: base64Video } },
+                { text: analysisPrompt }
+            ]
+        },
         config: {
-          tools,
-          toolConfig,
-          systemInstruction: "You are a helpful sports coach. Always perform the requested searches before generating the text analysis to ensure you have grounding data. When finding places, strictly exclude retail shops and stores.",
+          tools: [{ googleSearch: {} }],
+          systemInstruction: "You are a helpful sports coach. Always perform the requested searches before generating the text analysis.",
         }
       });
 
-      const fullText = response.text || "";
+      // --- Request 2: Local Maps Search (Gemini 2.5 Flash) ---
+      // Gemini 2.5 Flash is currently required for the Google Maps tool.
+      let mapsPromise = Promise.resolve<any>(null);
       
-      // Simple parsing based on the strict headers requested
+      if (location) {
+        const mapsPrompt = `Search for "${currentSport} courts, parks, and athletic clubs near me. Do NOT include retail stores, shops, or equipment stores." using Google Maps.`;
+        mapsPromise = ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: { parts: [{ text: mapsPrompt }] },
+            config: {
+                tools: [{ googleMaps: {} }],
+                toolConfig: { retrievalConfig: { latLng: { latitude: location.lat, longitude: location.lng } } }
+            }
+        });
+      }
+
+      // Execute in parallel
+      const [analysisResponse, mapsResponse] = await Promise.all([analysisPromise, mapsPromise]);
+
+      // --- Process Analysis Response (Text + Videos + Coaches) ---
+      const fullText = analysisResponse.text || "";
+      
       const analysisSplit = fullText.split('## DRILLS');
       const analysisSection = analysisSplit[0]?.replace('## ANALYSIS', '').trim() || "Analysis unavailable.";
       const drillsSection = analysisSplit[1]?.trim() || "Drills unavailable.";
 
-      const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+      const analysisGrounding = analysisResponse.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
       
-      // -- ROBUST FILTERING LOGIC --
-
-      // Helper to determine if a chunk is likely a video
+      // Filters
       const isVideoContent = (c: any) => {
         const title = (c.web?.title || "").toLowerCase();
         const uri = (c.web?.uri || "").toLowerCase();
@@ -317,21 +318,23 @@ const App = () => {
         return title.includes('shop') || title.includes('store') || title.includes('outlet') || title.includes('dick\'s') || title.includes('sporting goods');
       };
 
-      // 1. Videos (Strictly YouTube or Video titles)
-      const videos = groundingChunks.filter((c: any) => isVideoContent(c));
-      
-      // 2. Places (Map results) - Exclude shops
-      const places = groundingChunks.filter((c: any) => 
-        (c.maps || (c.web?.uri?.includes('maps.google'))) && !isShopOrStore(c)
-      );
-
-      // 3. Coaches (Everything else that is web based, NOT video, NOT map, NOT shop)
-      const apiCoaches = groundingChunks.filter((c: any) => 
+      // Extract videos and coaches from the analysis response
+      const videos = analysisGrounding.filter((c: any) => isVideoContent(c));
+      const apiCoaches = analysisGrounding.filter((c: any) => 
         c.web && 
         !isVideoContent(c) && 
         !c.web.uri.includes('maps.google') &&
         !isShopOrStore(c)
       );
+
+      // --- Process Maps Response (Places) ---
+      let places = [];
+      if (mapsResponse) {
+        const mapsGrounding = mapsResponse.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+        places = mapsGrounding.filter((c: any) => 
+            (c.maps || (c.web?.uri?.includes('maps.google'))) && !isShopOrStore(c)
+        );
+      }
 
       setResult({
         analysisSection,
@@ -346,7 +349,7 @@ const App = () => {
 
     } catch (err: any) {
       console.error(err);
-      setError("Analysis failed. Please try again.");
+      setError("Analysis failed. Try a smaller video (under 20MB) or a different format.");
     } finally {
       setIsAnalyzing(false);
     }
@@ -458,8 +461,8 @@ const App = () => {
                   <div className="relative">
                      <div className="w-12 h-12 border-4 border-indigo-100 border-t-indigo-600 rounded-full animate-spin"></div>
                   </div>
-                  <p className="text-indigo-600 font-bold mt-4 animate-pulse">Analyzing Biomechanics...</p>
-                  <p className="text-xs text-slate-400 mt-1">Finding local courts & drills...</p>
+                  <p className="text-indigo-600 font-bold mt-4 animate-pulse">Analyzing Video...</p>
+                  <p className="text-xs text-slate-400 mt-1">This may take a moment</p>
                 </div>
               )}
             </div>
