@@ -5,7 +5,7 @@ import {
   Loader2, Upload, MapPin, Youtube, User, Play, 
   CheckCircle, AlertCircle, ChevronRight, Video, 
   Dumbbell, LayoutDashboard, Globe, Activity, Star, Verified,
-  List, Map as MapIcon
+  List, Map as MapIcon, X
 } from 'lucide-react';
 
 // --- Types ---
@@ -101,6 +101,13 @@ const extractFrames = async (videoFile: File): Promise<string[]> => {
   });
 };
 
+const getYouTubeVideoId = (url: string): string | null => {
+  if (!url) return null;
+  const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/;
+  const match = url.match(regExp);
+  return (match && match[2].length === 11) ? match[2] : null;
+};
+
 // --- Components ---
 
 const TabButton = ({ active, onClick, icon: Icon, label }: any) => (
@@ -122,6 +129,77 @@ const Card = ({ children, className = "" }: { children?: React.ReactNode, classN
     {children}
   </div>
 );
+
+const VideoPlayerCard: React.FC<{ video: any }> = ({ video }) => {
+  const [isPlaying, setIsPlaying] = useState(false);
+  
+  // Fix generic titles
+  let displayTitle = video.web.title;
+  if (displayTitle.toLowerCase().trim() === 'youtube.com' || displayTitle.trim() === '') {
+    displayTitle = "Instructional Drill Video";
+  }
+
+  const videoId = getYouTubeVideoId(video.web.uri);
+
+  if (isPlaying && videoId) {
+    return (
+      <div className="bg-black rounded-xl overflow-hidden shadow-md aspect-video relative group">
+        <iframe
+          width="100%"
+          height="100%"
+          src={`https://www.youtube.com/embed/${videoId}?autoplay=1`}
+          title={displayTitle}
+          frameBorder="0"
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+          allowFullScreen
+          className="w-full h-full"
+        ></iframe>
+        <button 
+          onClick={() => setIsPlaying(false)}
+          className="absolute top-2 right-2 p-1.5 bg-black/50 hover:bg-black/80 text-white rounded-full backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-opacity"
+        >
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div 
+      onClick={() => videoId ? setIsPlaying(true) : window.open(video.web.uri, '_blank')}
+      className="flex items-start gap-4 p-3 bg-white rounded-xl border border-slate-200 shadow-sm active:bg-slate-50 transition-colors cursor-pointer group"
+    >
+      <div className="w-28 h-20 bg-slate-100 rounded-lg shrink-0 flex items-center justify-center relative overflow-hidden">
+         {/* Use YouTube thumbnail if available */}
+         {videoId ? (
+            <img 
+              src={`https://img.youtube.com/vi/${videoId}/mqdefault.jpg`}
+              className="w-full h-full object-cover"
+              alt="Video thumbnail"
+            />
+         ) : (
+            <img 
+              src={`https://www.google.com/s2/favicons?domain=youtube.com&sz=128`} 
+              className="w-8 h-8 opacity-50" 
+              alt="" 
+            />
+         )}
+         <div className="absolute inset-0 flex items-center justify-center bg-black/10 group-hover:bg-black/30 transition-colors">
+           <div className="w-8 h-8 bg-red-600 rounded-full flex items-center justify-center shadow-sm group-hover:scale-110 transition-transform">
+              <Play className="w-4 h-4 fill-white text-white ml-0.5" />
+           </div>
+         </div>
+      </div>
+      <div className="flex-1 min-w-0 py-1">
+        <h4 className="font-semibold text-sm text-slate-900 line-clamp-2 leading-snug mb-1">{displayTitle}</h4>
+        <div className="flex items-center gap-1 text-xs text-slate-500">
+           <Youtube className="w-3 h-3" />
+           <span className="truncate">{videoId ? 'Tap to Watch' : 'Watch on YouTube'}</span>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 // --- Main App ---
 
@@ -482,44 +560,9 @@ const App = () => {
                       <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full font-medium">YouTube</span>
                     </div>
                     {result.videos.length > 0 ? (
-                      result.videos.map((vid, i) => {
-                        // Fix generic titles
-                        let displayTitle = vid.web.title;
-                        if (displayTitle.toLowerCase().trim() === 'youtube.com' || displayTitle.trim() === '') {
-                          displayTitle = "Instructional Drill Video";
-                        }
-
-                        return (
-                          <a 
-                            key={i}
-                            href={vid.web.uri}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="flex items-start gap-4 p-3 bg-white rounded-xl border border-slate-200 shadow-sm active:bg-slate-50 transition-colors"
-                          >
-                            <div className="w-28 h-20 bg-slate-100 rounded-lg shrink-0 flex items-center justify-center relative overflow-hidden group">
-                               {/* Mock thumbnail using favicon */}
-                               <img 
-                                src={`https://www.google.com/s2/favicons?domain=youtube.com&sz=128`} 
-                                className="w-8 h-8 opacity-50" 
-                                alt="" 
-                               />
-                               <div className="absolute inset-0 flex items-center justify-center bg-black/10 group-hover:bg-black/20 transition-colors">
-                                 <div className="w-8 h-8 bg-red-600 rounded-full flex items-center justify-center shadow-sm">
-                                    <Play className="w-4 h-4 fill-white text-white ml-0.5" />
-                                 </div>
-                               </div>
-                            </div>
-                            <div className="flex-1 min-w-0 py-1">
-                              <h4 className="font-semibold text-sm text-slate-900 line-clamp-2 leading-snug mb-1">{displayTitle}</h4>
-                              <div className="flex items-center gap-1 text-xs text-slate-500">
-                                 <Youtube className="w-3 h-3" />
-                                 <span className="truncate">Watch on YouTube</span>
-                              </div>
-                            </div>
-                          </a>
-                        );
-                      })
+                      result.videos.map((vid, i) => (
+                        <VideoPlayerCard key={i} video={vid} />
+                      ))
                     ) : (
                       <div className="text-center p-12 bg-white rounded-2xl border border-dashed border-slate-300">
                         <Youtube className="w-10 h-10 mx-auto mb-3 text-slate-300" />
